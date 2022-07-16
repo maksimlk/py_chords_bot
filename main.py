@@ -1,5 +1,6 @@
+import configparser
 import telebot
-from telebot import types
+from telebot import types, apihelper
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
@@ -7,70 +8,45 @@ import pandas as pd
 from matplotlib.ticker import MaxNLocator
 import datetime
 
-TG_BOT_ID = "TG ID"
+print("[N] Chords bot is starting...")
+
+config = configparser.ConfigParser()
+config.sections()
+config.read('chords_bot.conf')
+
+apihelper.SESSION_TIME_TO_LIVE = 5 * 60
 
 s = requests.Session()
 s.headers.update({
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:45.0) Gecko/20100101 Firefox/45.0'
 })
-
-start_message = "Вас преветствует chords bot, этот бот был создан для поиска аккордов для разных инструментов и песен." \
+# ------------------- VARIABLES -------------------------------
+start_message = "Вас приветствует chords bot, этот бот был создан для поиска аккордов для разных инструментов и песен." \
                 " Просим вас выбрать ваш инструмент:"
 active_message = "Выберите действие"
-help_message = "Этот бот преднозначен для поиска аккордов песен, а также для поиска схем аккордов для выбранного " \
+help_message = "Этот бот предназначен для поиска аккордов песен, а также для поиска схем аккордов для выбранного " \
                "инструмента. \n"
 
 instruments = ["гитара", "укулеле"]
 chords = ['Am', 'Dm', 'Em', 'E', 'F', 'G', 'A', 'C']
 
-bot = telebot.TeleBot(TG_BOT_ID)
+# ------------------ CONNECTION ---------------------------------
+print("[N] Telebot is connected")
+bot = telebot.TeleBot(config['TOKENS']['tg_token'])
 
-conn = sqlite3.connect('chords.db')
+database_name = 'chords.db'
+print("[N] Database " + database_name + " is connected")
+conn = sqlite3.connect(database_name)
 
 cursor = conn.cursor()
 
 try:
-    query = "CREATE TABLE \"chords\" (\"ID\" INTEGER UNIQUE, \"user_id\" TEXT, \"instrument\" TEXT, \"registered\" TEXT, PRIMARY KEY (\"ID\"))"
+    print("[N] Trying to find an existing table. If it does not exist - creating new one.")
+    query = "CREATE TABLE IF NOT EXISTS \"chords\" (\"ID\" INTEGER UNIQUE, \"user_id\" TEXT, \"instrument\" TEXT, \"registered\" TEXT, PRIMARY KEY (\"ID\"))"
     cursor.execute(query)
-except:
-    pass
-
-
-def load_guitar_chord_class_page(chord):
-    if chord == 'B':
-        chord = 'H'
-    url = 'https://tuneronline.ru/chords/' + chord.lower()
-    request = requests.get(url, headers=s.headers)
-    return request.text
-
-
-def get_ukulele_chord_img(chord):
-    url = 'https://gitaraclub.ru/blog/akkordy-ukulele/'
-    request = requests.get(url, headers=s.headers)
-    page = request.text
-    soup = BeautifulSoup(str(page), features="html.parser")
-    chords_soup = soup.find_all('td')
-    for chord_soup in chords_soup:
-        soup1 = BeautifulSoup(str(chord_soup), features="html.parser")
-        if len(str(soup1.find('img').get('alt')).split()) > 1:
-            if str(soup1.find('img').get('alt')).split()[1] == chord:
-                return soup1.find('img').get('src')
-        if len(str(soup1.find('img').get('alt')).split('-')) > 1:
-            if str(soup1.find('img').get('alt')).split('-')[1] == chord:
-                return soup1.find('img').get('src')
-    return None
-
-
-def get_guitar_chord_img(chord):
-    page = load_guitar_chord_class_page(chord[0])
-    if chord[0] == 'B':
-        chord = 'H' + chord.lower()
-    soup = BeautifulSoup(str(page), features="html.parser")
-    chords_soup = soup.find_all('div', {'class': 'chords1'})
-    for chord_soup in chords_soup:
-        soup1 = BeautifulSoup(str(chord_soup), features="html.parser")
-        if soup1.find('h3', {'class': 'chordsh3'}).text == chord:
-            return soup1.find('img', {'class': 'crd'}).get('src')
+except Exception as e:
+    print(type(e))
+    print("[!] Table creation error")
 
 
 def set_instrument(msg):
@@ -78,21 +54,21 @@ def set_instrument(msg):
         send_keyboard(msg, "Выберите правильный инструмент")
         return
     with sqlite3.connect('chords.db') as con:
-        cursor = con.cursor()
-        cursor.execute('SELECT EXISTS(SELECT * from chords WHERE user_id=(?))', (msg.from_user.id,))
-        temp = cursor.fetchone()
+        curs = con.cursor()
+        curs.execute('SELECT EXISTS(SELECT * from chords WHERE user_id=(?))', (msg.from_user.id,))
+        temp = curs.fetchone()
         if temp[0] == 1:
-            cursor.execute('UPDATE chords SET instrument = ? WHERE user_id = ?',
-                           (msg.text, msg.from_user.id))
+            curs.execute('UPDATE chords SET instrument = ? WHERE user_id = ?',
+                         (msg.text, msg.from_user.id))
         else:
             temp = datetime.datetime.now().date()
-            cursor.execute('INSERT INTO chords (user_id, instrument, registered) VALUES (?, ?, ?)',
-                           (msg.from_user.id, msg.text, temp))
+            curs.execute('INSERT INTO chords (user_id, instrument, registered) VALUES (?, ?, ?)',
+                         (msg.from_user.id, msg.text, temp))
         con.commit()
     main_keyboard(msg, "Ваш инструмент: " + msg.text)
 
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'help'])
 def send_keyboard(message, text=start_message, function=set_instrument):
     keyboard = types.ReplyKeyboardMarkup(row_width=1)  # наша клавиатура
     for instrument in instruments:
@@ -156,26 +132,28 @@ def get_songs_list(msg):
     if len(songs) == 0:
         active_keyboard(msg, 'Простите, мы не можем найти песню с таким названием')
         return
+    bot.send_message(msg.from_user.id, text=("Бот нашёл " + str(len(songs)) + " песен с таким названием"))
     if len(songs) > 5:
         songs = songs[:5]
     for song in songs:
         soup1 = BeautifulSoup(str(song), features="html.parser").find('td', {'class', 'artist_name'})
+        print(soup1.text)
         songs_list.append(soup1.text)
         song_a = soup1.find_all('a')
         url = BeautifulSoup(str(song_a[1]), features="html.parser").find('a').get('href')
         urls_list.append(url)
     keyboard = types.InlineKeyboardMarkup()
-    i = 0
-    while i < len(songs_list):
+
+    for i in range(len(songs_list)):
         keyboard.add(types.InlineKeyboardButton(str(songs_list[i])[:64], callback_data=str(urls_list[i])))
-        i += 1
+
     keyboard.add(types.InlineKeyboardButton('выйти', callback_data='exit'))
     bot.send_message(msg.from_user.id,
                      text="Выберите вариант из предложенного", reply_markup=keyboard)
 
 
 def get_song_text(url):
-    request = requests.get('https:' + str(url), headers=s.headers)
+    request = requests.get(str(url), headers=s.headers)
     page = request.text
     soup = BeautifulSoup(str(page), features="html.parser")
     return soup.find('pre').text
@@ -216,11 +194,60 @@ def update_instrument(msg):
         send_keyboard(msg, "Выберите правильный инструмент", update_instrument)
         return
     with sqlite3.connect('chords.db') as con:
-        cursor = con.cursor()
-        cursor.execute('UPDATE chords SET instrument=? WHERE user_id=?',
-                       (msg.text, msg.from_user.id))
+        curs = con.cursor()
+        curs.execute('UPDATE chords SET instrument=? WHERE user_id=?',
+                     (msg.text, msg.from_user.id))
         con.commit()
     main_keyboard(msg, "Ваш инструмент: " + msg.text + ". Для просмотра своего инструмента введите")
+
+
+def get_instrument(msg, a=False):
+    with sqlite3.connect('chords.db') as con:
+        cursor = con.cursor()
+        instrument = cursor.execute(
+            'SELECT instrument FROM chords WHERE user_id=={}'.format(msg.from_user.id)).fetchone()
+        if a:
+            bot.send_message(msg.chat.id, instrument)
+            main_keyboard(msg)
+        return instrument[0]
+
+
+# -------------------------- CHORDS PART ---------------------------------------
+def load_guitar_chord_class_page(chord):
+    if chord == 'B':
+        chord = 'H'
+    url = 'https://tuneronline.ru/chords/' + chord.lower()[0]
+    request = requests.get(url, headers=s.headers)
+    return request.text
+
+
+def get_ukulele_chord_img(chord):
+    url = 'https://gitaraclub.ru/blog/akkordy-ukulele/'
+    request = requests.get(url, headers=s.headers)
+    page = request.text
+    soup = BeautifulSoup(str(page), features="html.parser")
+    chords_soup = soup.find_all('td')
+    for chord_soup in chords_soup:
+        soup1 = BeautifulSoup(str(chord_soup), features="html.parser")
+        if len(str(soup1.find('img').get('alt')).split()) > 1:
+            if str(soup1.find('img').get('alt')).split()[1] == chord:
+                return soup1.find('img').get('src')
+        if len(str(soup1.find('img').get('alt')).split('-')) > 1:
+            if str(soup1.find('img').get('alt')).split('-')[1] == chord:
+                return soup1.find('img').get('src')
+    return None
+
+
+def get_guitar_chord_img(chord):
+    page = load_guitar_chord_class_page(chord[0])
+    if chord[0] == 'B':
+        chord = 'H' + chord.lower()
+    soup = BeautifulSoup(str(page), features="html.parser")
+    chords_soup = soup.find_all('div', {'class': 'chords1'})
+    for chord_soup in chords_soup:
+        soup1 = BeautifulSoup(str(chord_soup), features="html.parser")
+        if soup1.find('h3', {'class': 'chordsh3'}).text.lower() == chord.lower():
+            return 'https:' + soup1.find('img', {'class': 'crd'}).get('src')
 
 
 def find_chord(msg):
@@ -247,17 +274,6 @@ def find_chord(msg):
     bot.register_next_step_handler(msg, get_chord)
 
 
-def get_instrument(msg, a=False):
-    with sqlite3.connect('chords.db') as con:
-        cursor = con.cursor()
-        instrument = cursor.execute(
-            'SELECT instrument FROM chords WHERE user_id=={}'.format(msg.from_user.id)).fetchone()
-        if a:
-            bot.send_message(msg.chat.id, instrument)
-            main_keyboard(msg)
-        return instrument[0]
-
-
 def get_chord(msg):
     instrument = get_instrument(msg)
     if instrument == "гитара":
@@ -266,8 +282,7 @@ def get_chord(msg):
     elif instrument == "укулеле":
         get_ukulele_chord(msg)
         return
-    bot.send_message(msg.from_user.id,
-                     text="Извините, мы не смогли найти данный аккорд")
+    return
 
 
 def get_guitar_chord(msg):
@@ -275,7 +290,7 @@ def get_guitar_chord(msg):
     if url_part is None or url_part == '':
         active_keyboard(msg, 'Извините, мы не можем найти такой аккорд, что вы хотите сделать теперь?')
         return
-    url = 'https:' + str(url_part)
+    url = str(url_part)
     bot.send_photo(msg.from_user.id, url)
     active_keyboard(msg)
 
@@ -285,11 +300,12 @@ def get_ukulele_chord(msg):
     if url_part is None or url_part == '':
         active_keyboard(msg, 'Извините, мы не можем найти такой аккорд, что вы хотите сделать теперь?')
         return
-    url = 'https:' + str(url_part)
+    url = str(url_part)
     bot.send_photo(msg.from_user.id, url)
     active_keyboard(msg)
 
 
+# -------------------- STATISTICS FUNCTIONS ---------------------------
 def send_stats(msg):
     with sqlite3.connect('chords.db') as con:
         # Инстурменты, которые используют пользователи
@@ -310,10 +326,7 @@ def send_stats(msg):
         fig2.yaxis.set_major_locator(MaxNLocator(integer=True))
         fig2.get_figure().savefig('temp2.png')
         bot.send_photo(msg.from_user.id, photo=open('temp2.png', 'rb'))
-        bot.send_message(msg.from_user.id,
-                         text="И ещё количество новых пользователей ежедневно")
-
     main_keyboard(msg, 'Что вы хотите сделать теперь?')
 
 
-bot.polling(none_stop=True)
+bot.infinity_polling()
